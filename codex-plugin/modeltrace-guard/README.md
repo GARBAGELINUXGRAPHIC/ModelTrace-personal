@@ -1,4 +1,6 @@
-# ModelTrace Guard
+# ModelTrace Guard Personal
+
+此版本基于 [xqy2006/ModelTrace](https://github.com/xqy2006/ModelTrace)，由 GARBAGELINUXGRAPHIC 维护个人补丁。版本 0.1.8；完整安装、配置与故障排查见 [个人版安装说明](../../INSTALL_PERSONAL.md)。
 
 作者：xqy2006。
 
@@ -9,20 +11,22 @@
 在终端运行：
 
 ```powershell
-codex plugin marketplace add xqy2006/ModelTrace
-codex plugin add modeltrace-guard@modeltrace
+codex plugin marketplace add GARBAGELINUXGRAPHIC/ModelTrace-personal --ref personal-fork
+codex plugin add modeltrace-guard@modeltrace-personal
 ```
 
 也可先下载源码，在 ModelTrace 仓库根运行：
 
 ```powershell
 codex plugin marketplace add .
-codex plugin add modeltrace-guard@modeltrace
+codex plugin add modeltrace-guard@modeltrace-personal
 ```
 
 市场入口为仓库根的 `.agents/plugins/marketplace.json`，插件位于 `codex-plugin/modeltrace-guard/`，清单为该目录下的 `.codex-plugin/plugin.json`。
 
 需要 Node.js 18+，以及支持原生快照 fork、临时任务、任务删除和异步 hooks 的 Codex App Server。可用 `node scripts/guard.mjs doctor --fork true` 检查兼容性。若系统有多个运行时，将 `MODELTRACE_CODEX_PATH` 设置为 Codex 桌面应用配套可执行文件的绝对路径。
+
+macOS 优先使用 `/Applications/ChatGPT.app` 或 `/Applications/Codex.app` 内置的 Codex 运行时；没有内置版本时才使用 PATH 的 CLI。存在多个桌面运行时时需显式设置 `MODELTRACE_CODEX_PATH`。旧 PATH CLI 可能既不在 Thread 摘要中返回模型/effort，又不支持分页聊天 fork。
 
 ### 加载与信任
 
@@ -54,6 +58,34 @@ node scripts/guard.mjs stop
 ```
 
 `doctor --fork true` 检查原生分支、后台 hooks 和清理能力，不发起推理。`start` 将首次检测排入队列后立即返回，由后台 hook 自动执行，不需要智能体再运行 `probe` 或轮询状态。外部终端手动开启时，目标任务的下一个已加载且受信任的 hook 会接手检测；不会主动唤醒空闲任务。
+
+### 可配置的模型允许列表
+
+使用 `start --policy allowed-list` 或 `configure --policy allowed-list` 启用。
+判断仅为 `!config.allowed_list.includes(fingerprintCandidate)`：候选不在列表内则立即告警、暂停，不复测。
+匹配区分大小写，使用完整模型 ID；不再按版本号、家族或 Luna 名称做额外判断。即使选择器标签与候选相同，规则仍然生效。
+
+默认配置项：
+
+```json
+{
+  "allowed_list": [
+    "gpt-6-astra",
+    "gpt-6.1-sol",
+    "gpt-6.2-astra",
+    "gpt-6.2-bel",
+    "gpt-6.2-sol"
+  ]
+}
+```
+
+该字段保存在当前任务状态的 `config.allowed_list` 中。可用 `configure --allowed-list '["gpt-6-astra","gpt-6.1-sol"]'` 修改并自动切换到允许列表模式；仪表盘配置 API 也接受 `allowed_list` 数组。状态输出包含当前名单。
+名单不能为空，最多 100 个互不重复且不含空白的模型 ID。配置按字面值匹配，不解析表达式，不使用 `eval()` 或 `Function()`。
+修改名单会作废在途检测并开始新配置段，已有历史记录保留；每个检查点和样本保存其所用名单。
+候选仍是实验性指纹判断，不是已验证的后端身份；低置信度第一候选也会触发名单规则。`--policy expected` 保留原先精确标签比较与复测行为。
+旧 `gpt6-plus` 参数保留为允许列表模式的兼容别名，不再执行版本判断。
+
+兼容旧 Codex Thread 摘要缺少模型和 effort 的情况：允许列表模式可固定受信任 hook 的模型与源摘要的 provider/cwd，并使用原生 fork 返回的有效 effort；结果明确标记 `sourceEffortVerified: false`。不读取对话正文，不回退到全局默认模型。
 
 可选 `--expected <模型标签>` 指定比较对象，`--expected auto` 跟随 Codex 元数据。缺少预期标签与预期标签未收录分开显示；历史样本保留采样时的标签。
 

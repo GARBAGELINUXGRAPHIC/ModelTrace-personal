@@ -25,6 +25,8 @@ export function summarize(state, directory, now = Date.now()) {
     displayName: state.taskName || state.codexTaskName || `未命名任务${state.workspaceName ? `（${state.workspaceName}）` : ''} · ${fallbackDate}`,
     workspaceName: state.workspaceName || null, startedAt, enabledAt: state.enabledAt || state.startedAt || null,
     reportedModel: state.model, expectedModel: state.expected, expectedSource: state.expectedSource,
+    policy: state.policy || 'expected',
+    allowed_list: validateConfig({}, state.config).allowed_list,
     epoch: state.epoch, frequency: validateConfig({}, state.config), hookObserved, hookState,
     runtimeStartedAt: state.runtimeStartedAt || null, lastWorkHookAt: state.lastWorkHookAt || null,
     samplingMode: state.samplingMode || 'legacy_in_context', snapshot: publicSnapshot(state.forkSnapshot), forkHealth: state.forkHealth || null,

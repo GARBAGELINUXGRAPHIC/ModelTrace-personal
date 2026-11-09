@@ -6,7 +6,7 @@ import { prepareCacheTransport } from './cache-transport.mjs';
 import { freezeSnapshot, publicSnapshot, removeSnapshot, verifySnapshot } from './fork-snapshot.mjs';
 import { forkPrompt } from './prompts.mjs';
 import { ProbeOutputError } from './probe-output.mjs';
-import { BACKGROUND_STATE_LOCK, abandon, digest, interruptConfirmation, processAlive, readState, record, schedule, setCodexTaskName, withState } from './state.mjs';
+import { BACKGROUND_STATE_LOCK, abandon, digest, interruptConfirmation, isAllowedListPolicy, processAlive, readState, record, schedule, setCodexTaskName, withState } from './state.mjs';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 export function forkParameters(snapshot, cacheTransport = null) {
@@ -28,6 +28,7 @@ export function verifyFork(response, snapshot) {
   if (response.cwd !== snapshot.cwd || response.thread.cwd !== snapshot.cwd) throw new Error('Codex fork workspace differs from the source snapshot');
   return {
     model: response.model, provider: response.modelProvider, effort: response.reasoningEffort ?? null, cwd: response.cwd,
+    ...(snapshot.sourceEffortVerified === false ? { sourceEffortVerified: false, effortSource: snapshot.effortSource } : {}),
     serviceTier: response.serviceTier ?? null,
     instructionSourcesSha256: digest(JSON.stringify(response.instructionSources || [])),
   };
@@ -62,7 +63,8 @@ export async function requireTrustedGuard(client, cwd) {
 export async function forkDoctor(session, directory, env = process.env) {
   const client = await openAppServer(env); let snapshot;
   try {
-    snapshot = await freezeSnapshot(client, session, directory);
+    const state = await readState(directory, session);
+    snapshot = await freezeSnapshot(client, session, directory, { allowNativeInheritance: isAllowedListPolicy(state?.policy), model: state?.model });
     await verifySnapshot(client, snapshot);
     const { effective } = await prepareProbeFork(client, snapshot);
     let toolsBlocked = false, hookError = null;
@@ -152,7 +154,7 @@ export async function runForkProbe(directory, session, challenge, env = process.
     client = await connect(env);
     stage = 'snapshot';
     if (!snapshot) {
-      snapshot = await freezeSnapshot(client, session, directory);
+      snapshot = await freezeSnapshot(client, session, directory, { allowNativeInheritance: isAllowedListPolicy(pending.policy), model: pending.model });
       await updateState((state) => {
         if (!state.enabled || state.pending?.id !== challenge || state.pending.epoch !== pending.epoch) throw new Error('Checkpoint changed before snapshot capture');
         if (state.model && state.model !== snapshot.model) throw new Error('Source task model metadata differs from the active hook model; wait for task metadata to synchronize');

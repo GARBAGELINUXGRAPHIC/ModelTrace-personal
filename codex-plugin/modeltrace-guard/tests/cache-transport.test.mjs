@@ -116,7 +116,12 @@ test('closing the cache transport tears down active connections and is idempoten
   const f = await fixture(t), url = new URL(f.relay.url);
   const socket = net.connect(Number(url.port), url.hostname);
   await new Promise(resolve => socket.once('connect', resolve));
-  const closed = new Promise(resolve => socket.once('close', resolve));
+  const closed = new Promise((resolve, reject) => {
+    // macOS may reset an idle connection when the relay destroys its peer.
+    // Still require close, and surface every error unrelated to that teardown.
+    socket.once('error', error => { if (error.code !== 'ECONNRESET') reject(error); });
+    socket.once('close', resolve);
+  });
   await f.relay.close(); await closed; await f.relay.close();
   assert.throws(() => f.relay.authorize(randomUUID()), /disposable/);
 });

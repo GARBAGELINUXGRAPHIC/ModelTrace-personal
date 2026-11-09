@@ -41,6 +41,23 @@ On a runner error, report the recorded coverage gap and the returned diagnostic 
 
 ## Notify, retry, halt
 
+Use `--policy allowed-list` to halt immediately when a valid fingerprint first
+candidate is absent from `config.allowed_list`. Configure it with `--allowed-list`
+followed by a JSON array of full model IDs; this option also selects allowed-list
+policy. The default list is gpt-6-astra, gpt-6.1-sol, gpt-6.2-astra, gpt-6.2-bel,
+and gpt-6.2-sol. Matching is exact and case-sensitive, with no extra Luna/version
+conditions and no expression execution. No retries are required in this mode.
+The rule applies even when the expected selector label equals the candidate or
+is absent from the bank. A list change invalidates a pending checkpoint without
+erasing history. Report a candidate as experimental evidence, not verified
+backend identity. `--policy expected` retains the original exact-label workflow.
+The former `gpt6-plus` option is only a compatibility alias for allowed-list mode.
+
+In allowed-list mode, old Codex Thread summaries may omit model and effort. The
+runner may pin the trusted hook's model plus the summary's provider/workspace,
+then use the native fork's returned effective effort. Results explicitly mark
+`sourceEffortVerified: false`; do not claim the original effort was verified.
+
 On `agentAction: notify_user_now`, `stop_and_notify_user`, pending notifications in status, or a trusted notification hook, tell the user before another work tool or the final answer. Include the expected model, first candidate and checkpoint time. Say “fingerprint candidate,” not a verified backend identity or proof of reduced reasoning effort. Describe stronger evidence separately from a weak ranking disagreement.
 
 Only AFTER sending that visible message, execute the returned `acknowledge --alert <ids>` command for the alerts actually described. Acknowledgement is the agent's report, not independent proof of delivery. Do not acknowledge silently.

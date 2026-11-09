@@ -116,6 +116,22 @@ test('dashboard keeps operational labels without the removed disclaimer copy', a
   assert.ok(page.includes('id="refresh"'));
 });
 
+test('allowed_list API updates exact IDs and invalidates the old checkpoint while retaining history', async (t) => {
+  const dir = await fixture(t); await syntheticState(dir);
+  await withState(dir, session, state => { state.pending = { id: 'old-list-checkpoint' }; });
+  const s = await serverFixture(t, dir), route = `/api/sessions/${digest(session)}/configure`;
+  const response = await s.call(route, { allowed_list: ['gpt-6.2-bel'] });
+  assert.equal(response.status, 200);
+  const updated = await readState(dir, session);
+  assert.equal(updated.policy, 'allowed-list');
+  assert.deepEqual(updated.config.allowed_list, ['gpt-6.2-bel']);
+  assert.equal(updated.pending, null);
+  assert.equal(updated.epoch, 2);
+  assert.equal(updated.samples.length, 1);
+  assert.equal((await s.call(route, { allowed_list: [] })).status, 400);
+  assert.deepEqual((await readState(dir, session)).config.allowed_list, ['gpt-6.2-bel']);
+});
+
 test('configuration API preserves counts, pending probe and alert history and rejects invalid payloads', async (t) => {
   const dir = await fixture(t); await syntheticState(dir);
   await withState(dir, session, (s) => { s.pending = { id: 'already-issued', language: 'en', expiresAt: Date.now() + 30000 }; });

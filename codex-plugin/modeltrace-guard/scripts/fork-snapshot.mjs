@@ -12,22 +12,26 @@ export function cleanupPath(directory, id) {
   return path.join(path.resolve(directory), '_fork_cleanup', `${id}.json`);
 }
 
-export async function sourceSettings(client, session) {
+export async function sourceSettings(client, session, { allowNativeInheritance = false, model: hookModel } = {}) {
   const { thread } = await client.request('thread/read', { threadId: session, includeTurns: false });
   if (!thread || thread.id !== session) throw new Error('Codex returned metadata for a different source task');
   if (thread.ephemeral || typeof thread.path !== 'string' || !path.isAbsolute(thread.path)) throw new Error('Source task has no persisted Codex history to fork');
   const nonempty = (value) => typeof value === 'string' && Boolean(value.trim());
-  // thread/read exposes current/persisted task settings without returning turns.
-  // Never open the rollout or substitute config/read's global/project defaults.
-  if (!nonempty(thread.model) || !nonempty(thread.modelProvider)
-    || !Object.hasOwn(thread, 'reasoningEffort') || (thread.reasoningEffort !== null && !nonempty(thread.reasoningEffort))
+  // Current Thread summaries omit model and reasoningEffort. Opt-in policy
+  // mode pins the trusted hook model and records native fork effort without
+  // claiming to have verified the source task's reasoning effort.
+  const inheritEffort = !Object.hasOwn(thread, 'reasoningEffort');
+  const model = Object.hasOwn(thread, 'model') ? thread.model : allowNativeInheritance ? hookModel : null;
+  if (!nonempty(model) || !nonempty(thread.modelProvider)
+    || (inheritEffort ? !allowNativeInheritance : thread.reasoningEffort !== null && !nonempty(thread.reasoningEffort))
     || typeof thread.cwd !== 'string' || !path.isAbsolute(thread.cwd)) {
     throw new Error('Codex source task metadata lacks model/provider/reasoning/workspace settings; no history scan or default-model fallback');
   }
   // Reuse this summary read for the real task title; do not read a transcript
   // or infer the title from the shared workspace name.
   const sourceTaskName = typeof thread.name === 'string' && thread.name.trim().length <= 120 && !/[\x00-\x1f\x7f]/.test(thread.name) ? thread.name.trim() : null;
-  return { model: thread.model, provider: thread.modelProvider, effort: thread.reasoningEffort, cwd: thread.cwd,
+  return { model, provider: thread.modelProvider, effort: thread.reasoningEffort ?? null, cwd: thread.cwd,
+    ...(inheritEffort ? { sourceEffortVerified: false, effortSource: 'native_fork' } : {}),
     ...(UUID.test(thread.sessionId || '') ? { cacheSessionId: thread.sessionId } : {}),
     ...(sourceTaskName ? { sourceTaskName } : {}) };
 }
@@ -63,8 +67,8 @@ export async function snapshotBoundaries(client, id, sourceTurn) {
 
 // Paginated histories reject copied rollout paths. Freeze using a native,
 // persisted fork which is NEVER given a model turn; all probes fork from it.
-export async function freezeSnapshot(client, session, directory) {
-  const settings = await sourceSettings(client, session);
+export async function freezeSnapshot(client, session, directory, options) {
+  const settings = await sourceSettings(client, session, options);
   const response = await client.request('thread/fork', {
     threadId: session, excludeTurns: true, deferGoalContinuation: true,
     model: settings.model, modelProvider: settings.provider, cwd: settings.cwd,
@@ -75,6 +79,13 @@ export async function freezeSnapshot(client, session, directory) {
   const snapshot = { id: base.id, sourceSession: session, path: base.path, capturedAt: Date.now(), boundary: 'codex_persisted_fork', ...settings };
   await saveOwnership(directory, snapshot, 'active');
   try {
+    if (settings.sourceEffortVerified === false) {
+      if (response.model !== settings.model || response.modelProvider !== settings.provider || response.cwd !== settings.cwd
+        || !Object.hasOwn(response, 'reasoningEffort') || (response.reasoningEffort !== null && (typeof response.reasoningEffort !== 'string' || !response.reasoningEffort.trim()))) {
+        throw new Error('Native snapshot settings differ from the pinned hook model/provider/workspace or omit effective effort');
+      }
+      snapshot.effort = response.reasoningEffort;
+    }
     const turn = await lastTurn(client, base.id);
     if (!turn || typeof turn.id !== 'string' || !turn.id || !['completed', 'interrupted', 'failed'].includes(turn.status)) throw new Error('Codex snapshot has no fixed completed/interrupted turn boundary');
     snapshot.sourceTurn = turn.id;

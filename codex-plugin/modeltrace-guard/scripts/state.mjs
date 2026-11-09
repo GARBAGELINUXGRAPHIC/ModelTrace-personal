@@ -8,10 +8,13 @@ import { compactHistory } from './history.mjs';
 import { removeSnapshot } from './fork-snapshot.mjs';
 export { validateNumbers } from './probe-output.mjs';
 
+export const DEFAULT_ALLOWED_LIST = Object.freeze(['gpt-6-astra', 'gpt-6.1-sol', 'gpt-6.2-astra', 'gpt-6.2-bel', 'gpt-6.2-sol']);
+export const isAllowedListPolicy = (policy) => policy === 'allowed-list' || policy === 'gpt6-plus';
 export const DEFAULTS = Object.freeze({
   mode: 'tools', toolMin: 16, toolMax: 32, retryCount: 3,
   pendingSeconds: 180,
   languages: ['zh', 'en'],
+  allowed_list: DEFAULT_ALLOWED_LIST,
 });
 export const WARNING = 'Closed-set fingerprint evidence for a fork continuation; not backend authentication. Frozen-rollout and multilingual error rates have not been independently measured.';
 export const digest = (value) => createHash('sha256').update(value).digest('hex');
@@ -23,7 +26,11 @@ export function validateConfig(patch = {}, previous = DEFAULTS) {
   for (const key of Object.keys(config)) if (!Object.hasOwn(DEFAULTS, key)) throw new Error(`Unknown frequency option: ${key}`);
   if (config.mode !== 'tools') throw new Error('Only tool-call frequency is supported; use --tool-min and --tool-max');
   if (!Array.isArray(config.languages) || !config.languages.length || new Set(config.languages).size !== config.languages.length || config.languages.some((code) => !LANGUAGES.includes(code))) throw new Error(`languages must be distinct codes from ${LANGUAGES.join(',')}`);
-  for (const key of Object.keys(DEFAULTS).filter((key) => !['mode', 'languages'].includes(key))) {
+  if (!Array.isArray(config.allowed_list) || !config.allowed_list.length || config.allowed_list.length > 100
+    || new Set(config.allowed_list).size !== config.allowed_list.length
+    || config.allowed_list.some(model => typeof model !== 'string' || !model.length || model.length > 200 || /[\s\x00-\x1f\x7f]/.test(model))) throw new Error('allowed_list must contain 1..100 distinct model IDs without whitespace');
+  config.allowed_list = [...config.allowed_list];
+  for (const key of Object.keys(DEFAULTS).filter((key) => !['mode', 'languages', 'allowed_list'].includes(key))) {
     if (!Number.isSafeInteger(config[key]) || config[key] < 1 || config[key] > 1000000) throw new Error(`${key} must be an integer in 1..1000000`);
   }
   if (config.toolMin > config.toolMax) throw new Error('Minimum interval exceeds maximum');
@@ -34,7 +41,7 @@ export function validateConfig(patch = {}, previous = DEFAULTS) {
 export function newState(session, now = Date.now()) {
   return {
     schema: 2, session, enabled: false, createdAt: now, config: { ...DEFAULTS }, taskName: null, codexTaskName: null, workspaceName: null,
-    epoch: 0, model: null, expected: null, expectedSource: 'auto', turn: null,
+    epoch: 0, model: null, expected: null, expectedSource: 'auto', policy: 'expected', turn: null,
     issued: 0, turnIssued: 0, workTools: 0, lastHookAt: null, hooksSeen: 0,
     lastSampleAt: null, maxObservedGapSeconds: 0, missed: 0, pending: null,
     seenTools: [], retiredTurns: [], stopTurn: null, forceProbe: false, samples: [], events: [], alerts: [],
@@ -99,6 +106,7 @@ export function isDue(state, now) {
 }
 
 export function isMismatch(sample) {
+  if (isAllowedListPolicy(sample.policy)) return sample.outcome === 'policy_violation';
   return Boolean(sample.expected && sample.prediction && sample.expected !== sample.prediction && Number.isFinite(sample.expectedWeight)
     && !['missing_expected_model', 'unknown_expected_model'].includes(sample.outcome));
 }
@@ -114,6 +122,13 @@ export function interruptConfirmation(state, now, reason) {
 // The initial mismatch is NOT one of the configured retries. Each accepted
 // retry belongs to one immutable comparison segment and cannot spawn a new batch.
 export function updateConfirmation(state, sample, checkpoint, now) {
+  if (isAllowedListPolicy(sample.policy)) {
+    if (isMismatch(sample) && !state.taskHalt) {
+      state.taskHalt = { id: sample.challenge, at: now, policy: 'allowed-list', allowed_list: sample.allowed_list, expected: 'fingerprint candidate in allowed_list', retryCount: 0, predictions: [sample.prediction], alertId: sample.challenge };
+      record(state, 'task_halt_requested', now, { ...state.taskHalt });
+    }
+    return;
+  }
   if (checkpoint.confirmationId) {
     const batch = state.confirmation;
     if (!batch || batch.status !== 'active' || batch.id !== checkpoint.confirmationId) return;
@@ -203,6 +218,7 @@ export function issue(state, now, draw = randomInt) {
   if (batch && (state.alerts || []).some((alert) => !alert.acknowledgedAt)) return null;
   state.pending = {
     id: randomUUID(), epoch: state.epoch, model: state.model, expected: state.expected,
+    ...(isAllowedListPolicy(state.policy) ? { policy: 'allowed-list', allowed_list: [...(state.config.allowed_list || DEFAULT_ALLOWED_LIST)] } : {}),
     count: batch ? batch.count : draw(292, 333), at: now, expiresAt: now + state.config.pendingSeconds * 1000,
     language: batch ? batch.language : state.config.languages[draw(0, state.config.languages.length)],
     workTools: state.workTools,
@@ -216,9 +232,17 @@ export function issue(state, now, draw = randomInt) {
   return state.pending;
 }
 
-export function classifySample(result, expected, previous = []) {
+export function isAllowedModel(model, allowedList = DEFAULT_ALLOWED_LIST) {
+  return typeof model === 'string' && allowedList.includes(model);
+}
+
+export function classifySample(result, expected, previous = [], policy = 'expected', allowedList = DEFAULT_ALLOWED_LIST) {
   const candidate = result.results.find((item) => item.model === expected);
   const top = result.results[0];
+  if (isAllowedListPolicy(policy)) return {
+    policy: 'allowed-list', allowed_list: [...allowedList], outcome: isAllowedModel(top.model, allowedList) ? 'compatible' : 'policy_violation',
+    prediction: top.model, closedSetWeight: top.probability, expectedWeight: candidate?.probability ?? null,
+  };
   let outcome = 'inconclusive';
   if (!expected) outcome = 'missing_expected_model';
   else if (!candidate) outcome = 'unknown_expected_model';

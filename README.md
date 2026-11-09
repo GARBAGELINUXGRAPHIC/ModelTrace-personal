@@ -1,4 +1,8 @@
-# ModelTrace
+# ModelTrace Personal
+
+这是 [xqy2006/ModelTrace](https://github.com/xqy2006/ModelTrace) 的个人 fork。`personal-fork` 分支包含可配置的 `allowed_list`、macOS 桌面运行时选择及 fork 兼容修复；原作者与指纹库来源保持原有署名。
+
+**安装个人版插件：[安装与配置说明](INSTALL_PERSONAL.md)。** 插件市场名为 `modeltrace-personal`，插件版本为 `0.1.8`。
 
 ModelTrace 是一个本地运行的主动模型归因工具。它通过三条独立的长整数生成挑战提取输出指纹，在统一候选库中自动判断模型家族和具体版本。
 

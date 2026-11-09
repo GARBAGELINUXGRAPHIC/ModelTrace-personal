@@ -153,6 +153,28 @@ test('an explicitly unset reasoning effort stays unset, without reading a defaul
   assert.equal(fork.params.config, undefined);
 });
 
+test('opt-in policy supports real Thread summaries, pins hook model and discloses unverified source effort', async (t) => {
+  const f = await fixture(t), source = f.threads.get(f.session);
+  delete source.model; delete source.reasoningEffort;
+  const snapshot = await freezeSnapshot(f.connect(), f.session, f.directory, { allowNativeInheritance: true, model: f.model });
+  assert.equal(snapshot.model, f.model);
+  assert.equal(snapshot.effort, 'high');
+  assert.equal(snapshot.sourceEffortVerified, false);
+  assert.equal(snapshot.effortSource, 'native_fork');
+  const fork = f.calls.find(({ method }) => method === 'thread/fork');
+  assert.equal(fork.params.model, f.model);
+  assert.equal(fork.params.config, undefined);
+});
+
+test('policy fallback still refuses absent hook model and malformed source settings', async (t) => {
+  const f = await fixture(t), source = f.threads.get(f.session);
+  delete source.model; delete source.reasoningEffort;
+  await assert.rejects(() => freezeSnapshot(f.connect(), f.session, f.directory, { allowNativeInheritance: true }), /metadata lacks/);
+  source.model = '';
+  await assert.rejects(() => freezeSnapshot(f.connect(), f.session, f.directory, { allowNativeInheritance: true, model: f.model }), /metadata lacks/);
+  assert.equal(f.counts().createdBase, 0);
+});
+
 test('snapshot verification requests only turn metadata and preserves the native compacted context', async (t) => {
   const f = await fixture(t);
   const compactedContext = [{ type: 'contextCompaction', summary: 'Native compacted task context' }];

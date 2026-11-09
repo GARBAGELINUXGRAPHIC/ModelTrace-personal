@@ -1,8 +1,10 @@
 import { randomInt } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { LANGUAGES } from './prompts.mjs';
+import { isAllowedListPolicy } from './state.mjs';
 import { acknowledgeAlerts, pendingAlerts, queueAlert, userNotice } from './alerts.mjs';
 import { summarize } from './status.mjs';
 import { dispatchQueuedCleanups, removeSnapshot, requestCleanupSweep } from './fork-snapshot.mjs';
@@ -40,6 +42,7 @@ export function challengeContext(state, directory) {
 }
 
 export function controlContext(state, directory) {
+  if (isAllowedListPolicy(state.taskHalt?.policy)) return `ModelTrace Guard: STOP THE ORIGINAL TASK NOW AND NOTIFY THE USER. Fingerprint candidate ${JSON.stringify(state.taskHalt.predictions[0])} is absent from the configured allowed_list. No retries are required. This is a fingerprint candidate, not verified backend identity. Wait for explicit user resumption. Halt ID: ${JSON.stringify(state.taskHalt.id)}.`;
   if (state.taskHalt) return `ModelTrace Guard: STOP THE ORIGINAL TASK NOW AND NOTIFY THE USER. All ${state.taskHalt.retryCount} follow-up probes disagreed with the expected model ${JSON.stringify(state.taskHalt.expected)}. Stop edits, commands, delegation and other task work. Explain the initial alert and retry results in a final user-visible answer, then wait for the user's decision. Do not resume automatically, clear the halt, or treat acknowledging the alert as permission to continue. This is a fingerprint comparison, not proof of backend identity. Halt ID: ${JSON.stringify(state.taskHalt.id)}.`;
   const batch = state.confirmation;
   if (batch?.status === 'active') {
@@ -237,10 +240,10 @@ function parseArguments(args) {
     if (!key.startsWith('--') || !args.length || Object.hasOwn(options, key.slice(2))) throw new Error(`Invalid or duplicate option ${key}`);
     options[key.slice(2)] = args.shift();
   }
-  const fields = ['mode', 'tool-min', 'tool-max', 'retry-count', 'pending-seconds', 'languages'];
+  const fields = ['mode', 'tool-min', 'tool-max', 'retry-count', 'pending-seconds', 'languages', 'allowed-list'];
   const perCommand = {
     help: [], doctor: ['fork'], models: [], hook: [], 'background-hook': [], wait: ['confirmation'], status: [], stop: [], resume: ['halt'], dashboard: [], 'dashboard-stop': [], acknowledge: ['alert'], label: ['name'],
-    start: ['expected', 'name', ...fields], configure: ['expected', 'name', ...fields], submit: ['challenge', 'numbers'], probe: ['challenge'],
+    start: ['expected', 'policy', 'name', ...fields], configure: ['expected', 'policy', 'name', ...fields], submit: ['challenge', 'numbers'], probe: ['challenge'],
   };
   if (!Object.hasOwn(perCommand, command)) throw new Error(`Unknown command: ${command}`);
   for (const key of Object.keys(options)) if (!['data-dir', 'session', ...perCommand[command]].includes(key)) throw new Error(`Unknown ${command} option --${key}`);
@@ -272,6 +275,8 @@ export async function run(args, env = process.env, receipt = null) {
     session: 'Defaults to CODEX_THREAD_ID; otherwise pass --session from a trusted hook. Never invent a task id.',
     frequency: '--tool-min N --tool-max N; equal min/max = fixed interval; tools only',
     retries: '--retry-count N (1..100, default 3): consecutive follow-ups after an initial mismatch; all N mismatches request task halt',
+    policy: '--policy expected|allowed-list; allowed-list immediately halts when the fingerprint candidate is absent from config.allowed_list, even when the expected label is absent from the bank',
+    allowedList: '--allowed-list <JSON array of model IDs> selects allowed-list policy; candidate IDs are matched exactly',
     resume: 'resume --halt <halt id> only after the user explicitly asks to resume task work',
     probeLimits: 'No per-turn or task-total probe limits; sampling remains subject to tool intervals, one live checkpoint and explicit stop/halt',
     languages: LANGUAGES, languageOption: '--languages zh,en,ja,ko,fr,de,es,pt,ru,ar (random per checkpoint; one code = fixed)',
@@ -346,7 +351,7 @@ export async function run(args, env = process.env, receipt = null) {
       const numbers = validateNumbers(options.numbers, p.count);
       const result = analyzeGlobalOutputs([{ text: JSON.stringify(numbers), expected_count: p.count }], bank);
       const previous = recentComparable(state, p);
-      const evidence = classifySample(result, state.expected, previous);
+      const evidence = classifySample(result, state.expected, previous, p.policy, p.allowed_list);
       const sample = {
         at: now, epoch: state.epoch, challenge: p.id, reportedModel: state.model, expected: state.expected,
         requestedCount: p.count, actualCount: numbers.length, countMatched: numbers.length === p.count,
@@ -366,14 +371,15 @@ export async function run(args, env = process.env, receipt = null) {
       schedule(state, now);
       const alert = queueAlert(state, sample);
       updateConfirmation(state, sample, p, now);
-      if (state.taskHalt && alert) { alert.level = 'confirmed_mismatch'; alert.retryCount = state.taskHalt.retryCount; alert.predictions = state.taskHalt.predictions; }
+      if (state.taskHalt && alert) { alert.level = isAllowedListPolicy(state.taskHalt.policy) ? 'policy_violation' : 'confirmed_mismatch'; alert.retryCount = state.taskHalt.retryCount; alert.predictions = state.taskHalt.predictions; }
       if (state.confirmation?.status === 'active') issue(state, now);
       const { numbers: omitted, ...publicSample } = sample;
       return { accepted: true, sample: publicSample, warning: WARNING, userNotice: alert ? userNotice(alert) : null, agentAction: state.taskHalt ? 'stop_and_notify_user' : alert ? 'notify_user_now' : state.confirmation?.status === 'active' ? 'complete_retries' : null, notification: alert, notificationContext: alert ? notificationContext(state, directory, [alert]) : null, confirmation: state.confirmation || null, taskHalt: state.taskHalt || null, controlContext: controlContext(state, directory), challengeContext: state.pending?.confirmationId ? challengeContext(state, directory) : null };
     }, receipt.stateOptions);
   }
   const patch = {};
-  for (const key of fields) if (options[key] !== undefined) patch[key.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase())] = key === 'mode' ? options[key] : key === 'languages' ? options[key].split(',').map((code) => code.trim().toLowerCase()) : Number(options[key]);
+  for (const key of fields) if (options[key] !== undefined) patch[key === 'allowed-list' ? 'allowed_list' : key.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase())] = key === 'mode' ? options[key] : key === 'allowed-list' ? JSON.parse(options[key]) : key === 'languages' ? options[key].split(',').map((code) => code.trim().toLowerCase()) : Number(options[key]);
+  if (options['allowed-list'] !== undefined && options.policy !== undefined && !isAllowedListPolicy(options.policy)) throw new Error('--allowed-list requires allowed-list policy');
   if (command === 'start' || command === 'configure') await loadArtifacts();
   return withState(directory, session, async (state) => {
     if (command === 'resume') {
@@ -402,7 +408,13 @@ export async function run(args, env = process.env, receipt = null) {
       && state.config.toolMin === 8 && state.config.toolMax === 16) {
       state.config = { ...state.config, toolMin: DEFAULTS.toolMin, toolMax: DEFAULTS.toolMax };
     }
+    const previousList = state.config.allowed_list;
     state.config = validateConfig(patch, state.config);
+    if (options.policy !== undefined && !['expected', 'allowed-list', 'gpt6-plus'].includes(options.policy)) throw new Error('policy must be expected or allowed-list');
+    const selectedPolicy = options['allowed-list'] !== undefined ? 'allowed-list' : options.policy ?? state.policy ?? 'expected';
+    const nextPolicy = isAllowedListPolicy(selectedPolicy) ? 'allowed-list' : selectedPolicy;
+    const changedPolicy = nextPolicy !== (state.policy || 'expected') || (nextPolicy === 'allowed-list' && JSON.stringify(previousList) !== JSON.stringify(state.config.allowed_list));
+    state.policy = nextPolicy;
     const newExpected = options.expected;
     let changedExpected = false;
     if (newExpected !== undefined) {
@@ -418,7 +430,7 @@ export async function run(args, env = process.env, receipt = null) {
       state.enabledAt = now;
       state.startedAt ||= now;
       segment(state, now, 'monitoring_started');
-    } else if (changedExpected) segment(state, now, 'expected_model_changed');
+    } else if (changedExpected || changedPolicy) segment(state, now, changedPolicy ? 'policy_changed' : 'expected_model_changed');
     record(state, 'frequency_configured', now, { config: { ...state.config } });
     schedule(state, now);
     // The tool's PostToolUse background hook picks this up; no foreground probe.
@@ -437,4 +449,4 @@ export async function main(args = process.argv.slice(2)) {
   finally { dispatchQueuedCleanups(); }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) await main();

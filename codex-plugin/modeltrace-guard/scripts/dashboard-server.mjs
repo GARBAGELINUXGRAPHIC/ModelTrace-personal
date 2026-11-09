@@ -3,7 +3,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { lstat, readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { abandon, digest, interruptConfirmation, publicSample, record, schedule, setTaskName, validateConfig, withState } from './state.mjs';
+import { abandon, digest, interruptConfirmation, publicSample, record, schedule, segment, setTaskName, validateConfig, withState } from './state.mjs';
 import { summarize } from './status.mjs';
 import { historyCount, historyPage } from './history.mjs';
 
@@ -177,8 +177,14 @@ export async function createDashboard({ directory, token = randomBytes(32).toStr
         const now = Date.now();
         if (match[2] === 'configure') {
           if (!live.enabled) throw fail(409, '监测未开启，请在目标 Codex 任务中开启');
+          const previousList = live.config.allowed_list;
+          const previousPolicy = live.policy;
           try { live.config = validateConfig(body, live.config); }
           catch (error) { throw fail(400, error.message); }
+          if (Object.hasOwn(body, 'allowed_list')) {
+            live.policy = 'allowed-list';
+            if (previousPolicy !== live.policy || JSON.stringify(previousList) !== JSON.stringify(live.config.allowed_list)) segment(live, now, 'allowed_list_changed');
+          }
           schedule(live, now);
           record(live, 'frequency_configured', now, { config: { ...live.config }, source: 'dashboard' });
         } else if (match[2] === 'name') {

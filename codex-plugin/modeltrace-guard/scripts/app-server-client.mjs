@@ -3,15 +3,27 @@ import { access, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { readProtocolLines } from './protocol-lines.mjs';
 
-export const CODEX_CLIENT_INFO = Object.freeze({ name: 'modeltrace_guard', version: '0.1.7' });
+export const CODEX_CLIENT_INFO = Object.freeze({ name: 'modeltrace_guard', version: '0.1.8' });
 
 // Use Codex's own transport and configured account/provider, never a parallel
 // hand-written Responses/Chat client. Do not print protocol history or stderr.
-export async function codexExecutable(env = process.env) {
+export async function codexExecutable(env = process.env, { platform = process.platform, accessFile = access } = {}) {
   if (env.MODELTRACE_CODEX_PATH) {
     if (!path.isAbsolute(env.MODELTRACE_CODEX_PATH)) throw new Error('MODELTRACE_CODEX_PATH must be an absolute executable path');
-    await access(env.MODELTRACE_CODEX_PATH);
+    await accessFile(env.MODELTRACE_CODEX_PATH);
     return env.MODELTRACE_CODEX_PATH;
+  }
+  if (platform === 'darwin') {
+    const candidates = [
+      '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex',
+      '/Applications/Codex.app/Contents/Resources/codex',
+    ];
+    const found = [];
+    for (const executable of candidates) {
+      try { await accessFile(executable); found.push(executable); } catch {}
+    }
+    if (found.length === 1) return found[0];
+    if (found.length > 1) throw new Error('Multiple Codex desktop runtimes found; set MODELTRACE_CODEX_PATH to the runtime used by this Codex app');
   }
   if (process.platform === 'win32' && env.LOCALAPPDATA) {
     const root = path.join(env.LOCALAPPDATA, 'OpenAI', 'Codex', 'bin');

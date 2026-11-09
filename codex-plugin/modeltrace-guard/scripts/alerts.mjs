@@ -1,4 +1,4 @@
-import { isMismatch, record } from './state.mjs';
+import { isAllowedListPolicy, isMismatch, record } from './state.mjs';
 
 // A candidate mismatch is not automatically a strong difference signal. Keep both
 // visible, with different wording, instead of silently discarding weak evidence.
@@ -11,6 +11,8 @@ export function queueAlert(state, sample) {
   const alert = {
     id: sample.challenge, at: sample.at, epoch: sample.epoch, level,
     expected: sample.expected, prediction: sample.prediction, reportedModel: sample.reportedModel,
+    ...(sample.policy ? { policy: sample.policy } : {}),
+    ...(sample.allowed_list ? { allowed_list: sample.allowed_list } : {}),
     language: sample.language, closedSetWeight: sample.closedSetWeight, expectedWeight: sample.expectedWeight,
     acknowledgedAt: null, deliveryCount: 0, lastDeliveredAt: null, lastDeliveryTurn: null,
   };
@@ -22,6 +24,7 @@ export function queueAlert(state, sample) {
 export const pendingAlerts = (state) => (state?.alerts || []).filter((alert) => !alert.acknowledgedAt);
 
 export function userNotice(alert) {
+  if (alert.level === 'policy_violation' || isAllowedListPolicy(alert.policy)) return `ModelTrace Guard：${new Date(alert.at).toISOString()} 的指纹第一候选为 ${JSON.stringify(alert.prediction)}，不在配置的 allowed_list 内。立即暂停原任务，不复测，等待用户指示。候选不代表已验证的后端身份。`;
   if (alert.level === 'confirmed_mismatch') return `ModelTrace Guard：首次异常后的 ${alert.retryCount} 次复测全部与预期模型 ${JSON.stringify(alert.expected)} 不一致。复测第一候选依次为 ${JSON.stringify(alert.predictions || [alert.prediction])}。已要求智能体立刻停止原任务并告知用户，等待用户决定后续操作。`;
   const strength = { candidate_mismatch: '候选排序不一致，但证据不足', difference_signal: '一次较强的指纹差异线索', repeated_difference: '近期重复的同语言指纹差异线索' }[alert.level];
   return `ModelTrace Guard 提醒：${new Date(alert.at).toISOString()} 的抽样中，预期模型为 ${JSON.stringify(alert.expected)}，指纹第一候选为 ${JSON.stringify(alert.prediction)}（${strength}）。这是未独立校准的实验性结果，不能据此确认模型被替换、降智或厂商作弊；后续匹配也不会抹去本次记录。`;
